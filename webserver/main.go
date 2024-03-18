@@ -1,45 +1,44 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"net/http"
+
+	"github.com/anthdm/ggcommerce/api"
+	"github.com/anthdm/ggcommerce/store"
+
+	"github.com/anthdm/weavebox"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func handleForm(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		fmt.Fprintln(w, "parseForm() error:", err)
-		return
-	}
-	fmt.Print("form post succesfull")
-	name := r.FormValue("name")
-	address := r.FormValue("address")
-	fmt.Fprintf(w, "Name %v", name)
-	fmt.Fprintf(w, "Address %v", address)
-
+func handleAPIError(ctx *weavebox.Context, err error) {
+	fmt.Println("API error:", err)
+	ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 }
 
-func handleHello(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/hello" {
-		http.Error(w, "404 NOt found", http.StatusNotFound)
-		return
-	}
-
-	if r.Method != "GET" {
-		http.Error(w, "Method NOt supported", http.StatusNotFound)
-		return
-	}
-	fmt.Print("Hello")
-
-}
 func main() {
-	fileserver := http.FileServer(http.Dir("./static"))
-	http.Handle("/", fileserver)
-	http.HandleFunc("/form", handleForm)
-	http.HandleFunc("/hello", handleHello)
+	app := weavebox.New()
+	app.ErrorHandler = handleAPIError
 
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Panic("can't starrt server")
+	adminMW := &api.AdminAuthMiddleware{}
+	adminRoute := app.Box("/admin")
+	adminRoute.Use(adminMW.Authenticate)
+
+	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI("mongodb://localhost:27017"))
+	if err != nil {
+		panic(err)
 	}
-	fmt.Println("Starting server at port 8080")
+	productStore := store.NewMongoProductStore(client.Database("ggcommerce"))
+	productHandler := api.NewProductHandler(productStore)
+
+	// admin/product
+	adminProductRoute := adminRoute.Box("/product")
+	adminProductRoute.Get("/:id", productHandler.HandleGetProductByID)
+	adminProductRoute.Get("/", productHandler.HandleGetProducts)
+	adminProductRoute.Post("/", productHandler.HandlePostProduct)
+
+	app.Serve(3001)
 }
